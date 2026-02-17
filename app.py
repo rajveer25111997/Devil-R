@@ -18,7 +18,7 @@ genai.configure(api_key="YOUR_GEMINI_API_KEY")
 model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
 
 # --- Global Variables (Bot ki Memory) ---
-wallet = 100000
+st.session_state.wallet = 100000
 portfolio = {}
 market_status = {} # Website par dikhane ke liye
 coins = ["BTC-USD", "ETH-USD", "RELIANCE.NS", "SBIN.NS", "TATAMOTORS.NS"]
@@ -120,7 +120,7 @@ def run_trading_bot():
             except Exception as e:
                  print(f"❌ Error in {ticker}: {e}")
 
-        time.sleep(300) # 5 Minute Break
+        time.sleep(60) # 5 Minute Break
 
 # 3. WEB ROUTES
 @app.route('/')
@@ -143,4 +143,4 @@ if __name__ == '__main__':
     bot_thread.start()
 
     # Web server shuru karein
-    app.run(debug=True, port=5000)
+    st.rerun(debug=True, port=5000)
