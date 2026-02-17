@@ -1,146 +1,111 @@
-# --- PROJECT JARVIS: FINAL WEB EDITION ---
-# Is file ko 'app.py' naam se save karein
-
+import streamlit as st
 import yfinance as yf
-import ccxt
 import pandas_ta as ta
-import time
-import threading
 import google.generativeai as genai
-from flask import Flask, render_template, jsonify, request
+import pandas as pd
+import time
+from datetime import datetime
 
-# 1. SETUP & CONFIGURATION
-app = Flask(__name__)
+# --- 1. PAGE CONFIG & DESIGN ---
+st.set_page_config(page_title="Jarvis AI Terminal", page_icon="🤖", layout="wide")
 
-# --- AI Setup ---
-# Apni API Key yahan dalein
-genai.configure(api_key="YOUR_GEMINI_API_KEY")
+# Jarvis HUD Theme (Dark Blue & Cyan)
+st.markdown("""
+    <style>
+    .main { background-color: #00050a; color: #00f2ff; }
+    .stMetric { background-color: #001a2e; padding: 15px; border-radius: 10px; border: 1px solid #00f2ff; }
+    .ai-box { background-color: #001f3f; padding: 20px; border-radius: 10px; border-left: 5px solid #00f2ff; color: #e0faff; font-style: italic; }
+    h1, h2, h3 { color: #00f2ff !important; text-shadow: 0 0 10px #00f2ff55; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. SESSION STATE (Persistence) ---
+if 'wallet' not in st.session_state:
+    st.session_state.wallet = 100000.0
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = {}
+
+# --- 3. AI CONFIGURATION ---
+# Streamlit Secrets se API key uthayega (Security)
+apiKey = st.secrets.get("GOOGLE_API_KEY", "")
+genai.configure(api_key=apiKey)
 model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
 
-# --- Global Variables (Bot ki Memory) ---
-st.session_state.wallet = 100000
-portfolio = {}
-market_status = {} # Website par dikhane ke liye
-coins = ["BTC-USD", "ETH-USD", "RELIANCE.NS", "SBIN.NS", "TATAMOTORS.NS"]
-danger_words = ["crash", "scam", "hack", "ban", "drop", "stolen"]
-
-# 2. JARVIS LOGIC FUNCTIONS
-def ask_jarvis(data_summary):
-    """AI se trading advice mangne wala function"""
+# --- 4. SMART DATA ENGINE ---
+def get_market_data(ticker):
     try:
-        prompt = f"Aap Jarvis hain. Is data ko dekh kar short trading advice dein: {data_summary}"
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="1mo", interval="1h")
+        if df.empty: return None, None, False
+        
+        # Indicators
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+        df['EMA_200'] = ta.ema(df['Close'], length=200)
+        
+        # Whale Detection
+        df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
+        is_whale = df['Volume'].iloc[-1] > (df['Vol_Avg'].iloc[-1] * 2)
+        
+        return df, stock.news, is_whale
+    except:
+        return None, None, False
+
+def ask_jarvis(summary):
+    prompt = f"Aap Jarvis hain. Is market data ka analysis karein aur professional advice dein: {summary}"
+    try:
         response = model.generate_content(prompt)
         return response.text
     except:
-        return "Sir, AI connectivity mein dikkat hai. Math logic check karein."
+        return "Sir, server issues. AI advise unavailable."
 
-def get_market_data_smart(ticker):
-    # matlab: ye function pehale yohoo se koshish karega
-    try:
-       stock = yf.Ticker(ticker)
-       df = stock.history(period="1mo", interval="1h")
-       if not df.empty:
-          #ager data mil gaya toh dataframe aur "yahoo" naam bhej do
-          return df, stock, "Yahoo"
-    except:
-        pass # ager yahoo fail hua, toh niche jayega
+# --- 5. UI LAYOUT ---
+st.title("🖥️ JARVIS GLOBAL TERMINAL v4.0")
+st.sidebar.title("System Controls")
+selected_coins = st.sidebar.multiselect("Select Assets", 
+                                       ["BTC-USD", "ETH-USD", "RELIANCE.NS", "SBIN.NS", "TATAMOTORS.NS"],
+                                       default=["BTC-USD", "RELIANCE.NS"])
 
-    # yahan humnw backup rakha hai (Abhi ke leye none)
-    return None, None, "Fail"
+main_col, wallet_col = st.columns([2, 1])
 
-def run_trading_bot():
-    """Ye bot background mein hamesha chalta rahega"""
-    global wallet, market_status, portfolio
+with wallet_col:
+    st.subheader("💳 Wallet Core")
+    st.metric("Available Cash", f"₹{st.session_state.wallet:,.2f}")
+    if st.session_state.portfolio:
+        st.write("**Holdings:**")
+        for t, p in st.session_state.portfolio.items():
+            st.write(f"• {t} (Bought at ₹{p:.2f})")
 
-    print("🤖 Jarvis: Market Scanning Shuru kar raha hoon...")
-
-    while True:
-        for ticker in coins:
-            try:
-                # A. Data Fetching
-                df, data, source = get_market_data_smart(ticker)
-
-                # B. Indicators
-                if df is not None:
-                    df['RSI'] = ta.rsi(df['Close'], length=14)
-                    df['EMA_200'] = ta.ema(df['Close'], length=200)
-                    df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
-                else:
-                    print(f"{ticker} ka data kahin se nahi mila. Skipping...")
-            except Exception as e:
-                print(f"Error in {ticker}: {e}")
-
-                curr_price = df['Close'].iloc[-1]
+with main_col:
+    if st.button("Initialize System Scan"):
+        st.info("Scanning frequencies... Please wait.")
+        market_summary = ""
+        
+        for ticker in selected_coins:
+            df, news, is_whale = get_market_data(ticker)
+            if df is not None:
+                curr_p = df['Close'].iloc[-1]
                 curr_rsi = df['RSI'].iloc[-1]
                 curr_ema = df['EMA_200'].iloc[-1]
-                curr_vol = df['Volume'].iloc[-1]
-                avg_vol = df['Vol_Avg'].iloc[-1]
+                
+                # Logic for Paper Trading
+                if curr_rsi < 30 and curr_p > curr_ema:
+                    if ticker not in st.session_state.portfolio:
+                        st.session_state.portfolio[ticker] = curr_p
+                        st.session_state.wallet -= curr_p
+                        st.success(f"PAPER BUY: {ticker} @ {curr_p:.2f}")
 
-                # C. News & Whale Detection
-                news = data.news
-                headline = news[0].get('title', 'No News') if news else "No News Found"
+                # Display Visuals
+                whale_status = "🐳 WHALE ALERT" if is_whale else "Normal Volume"
+                st.metric(label=f"{ticker} ({whale_status})", value=f"{curr_p:.2f}", delta=f"RSI: {curr_rsi:.2f}")
+                market_summary += f"{ticker}: Price {curr_p}, RSI {curr_rsi}, Whale: {is_whale}. "
+            else:
+                st.error(f"Uplink fail: {ticker}")
 
-                whale_alert = "Normal"
-                if curr_vol > (avg_vol * 2):
-                    whale_alert = "⚠️ WHALE ENTRY DETECTED"
+        # AI Advice Section
+        if market_summary:
+            st.divider()
+            with st.spinner("Jarvis is thinking..."):
+                advice = ask_jarvis(market_summary)
+                st.markdown(f"<div class='ai-box'>🤖 Jarvis: {advice}</div>", unsafe_allow_html=True)
 
-                is_bad_news = any(word in headline.lower() for word in danger_words)
-
-                # D. AI Advice (Sirf Setup par)
-                ai_msg = "Sukun se baithiye, koi setup nahi hai."
-                if curr_rsi < 35 or curr_rsi > 65:
-                    summary = f"Stock: {ticker}, Price: {curr_price}, RSI: {curr_rsi}, News: {headline}"
-                    ai_msg = ask_jarvis(summary)
-
-                # E. Paper Trading Logic
-                trade_action = "Wait"
-                if curr_rsi < 30 and curr_price > curr_ema and not is_bad_news:
-                    if ticker not in portfolio:
-                        portfolio[ticker] = curr_price
-                        wallet -= curr_price
-                        trade_action = "BUY"
-
-                elif curr_rsi > 70 and ticker in portfolio:
-                    buy_p = portfolio.pop(ticker)
-                    wallet += curr_price
-                    trade_action = f"SELL (Profit: {curr_price - buy_p:.2f})"
-
-                # F. Update Website Data
-                market_status[ticker] = {
-                    "price": round(curr_price, 2),
-                    "rsi": round(curr_rsi, 2),
-                    "whale": whale_alert,
-                    "news": headline,
-                    "ai_advice": ai_msg,
-                    "action": trade_action
-                }
-
-                print(f"✅ Updated: {ticker} | Price: {curr_price:.2f}")
-
-            except Exception as e:
-                 print(f"❌ Error in {ticker}: {e}")
-
-        time.sleep(60) # 5 Minute Break
-
-# 3. WEB ROUTES
-@app.route('/')
-def home():
-    # Asali website ke liye hum 'templates/index.html' use karenge
-    return "Jarvis Dashboard is Running! Go to /api/status"
-
-@app.route('/api/status')
-def get_status():
-    return jsonify({
-        "market": market_status,
-        "wallet": round(wallet, 2),
-        "holdings": list(portfolio.keys())
-    })
-
-# 4. START SYSTEM
-if __name__ == '__main__':
-    # Bot ko alag thread mein shuru karein
-    bot_thread = threading.Thread(target=run_trading_bot, daemon=True)
-    bot_thread.start()
-
-    # Web server shuru karein
-    st.rerun(debug=True, port=5000)
+st.caption(f"System Time: {datetime.now().strftime('%H:%M:%S')}")
